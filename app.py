@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import df_manipulation
+from df_manipulation import df_manipulation
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly
@@ -16,15 +16,29 @@ st.title('Magic+ Dashboard')
 # Load data and assemble into a dataframe
 @st.cache(allow_output_mutation=True)
 def load_data():
+
+    # int_shipment five main tools
     df_int = pd.read_csv('./datasets/int_shp_12mths_FiveMainTools.csv')
+
+    # int_shipment other tools
+    int_other_tools = ['Others_noFXSF0104', 'FXSF0104_part1', 'FXSF0104_part2', 'FXSF0104_part3']
+    list_df_int_other_tools = [pd.read_csv('./datasets/othertools/int_shp_12mths_{}.csv'.format(tool)) for tool in int_other_tools]
+    df_int_other_tools = pd.concat(list_df_int_other_tools)
+    df_int_other_tools.loc[:, 'sw_ver'] = 'Others'
+    df_int_other_tools = df_int_other_tools[['meter', 'sw_ver', 'total_shipments', 'avg_rev']]
+
+    # Concatenate all tools
+    df_alltools = pd.concat([df_int, df_int_other_tools])
+
+    # Other relevant data
     df_cust_nbr = pd.read_csv('./datasets/Meter_CustNbr.csv')
     df_sphnd = pd.read_csv('./datasets/sphnd_int_12mths_FiveMainTools.csv')
     df_product_nm = pd.read_excel('./datasets/svc_bas_cd(product_nm).xlsx')
     df_cust_hierarchy = pd.read_csv('./datasets/EAN.csv')
-    df_Region = pd.read_excel('./datasets/Region.xlsx')
+    df_region = pd.read_excel('./datasets/Region.xlsx')
 
     # Assemble the dataframe
-    df = df_int.merge(df_cust_nbr, on='meter', how='left').merge(df_product_nm[['product', 'product_nm']], on='product', how='left').merge(df_cust_hierarchy, on='cust_nbr', how='left')
+    df = df_alltools.merge(df_cust_nbr, on='meter', how='left').merge(df_product_nm[['product', 'product_nm']], on='product', how='left').merge(df_cust_hierarchy, on='cust_nbr', how='left').merge(df_region, on='cust_ctry', how='left')
 
     return df, df_sphnd
 
@@ -104,7 +118,7 @@ df = clean_data(df)
 @st.cache(allow_output_mutation=True)
 def df_add_sphnd(df, df_sphnd):
     """
-    Function to add 'sphnd' on meter level: indicate whether a meter ships any special handling,
+    Function to add 'sphnd' on METER level: indicate whether a meter ships any special handling,
     so we can see number of shipments of each special handling
     """
 
@@ -138,6 +152,14 @@ df = df_add_sphnd(df, df_sphnd)
 
 @st.cache
 def df_add_features(df):
+    """
+    Function to add other features into dataframe:
+    'prod_cplx': how many unique products a customer ship
+    'freight': whether a customer ship freight
+    'freight_sphnd': whether a customer ship freight and/or special handling
+    'tot_revenue': total revenue of one record
+    'avg_rev_per_shp': average revenue per shipment of a customer
+    """
 
     # 'prod_cplx': count unique product of each customer
     df['prod_cplx'] = df.groupby('cust_nbr').product.transform('nunique')
@@ -152,7 +174,7 @@ def df_add_features(df):
 
     # 'avg_rev_per_shp': average revenue per shipment
     df['tot_revenue'] = df.total_shipments * df.avg_rev
-    df['avg_rev_per_shp'] = df.groupby('cust_nm').tot_revenue.transform('sum') / df.groupby('cust_nm').total_shipments.transform('sum')
+    df['avg_rev_per_shp'] = df.groupby('cust_nbr').tot_revenue.transform('sum') / df.groupby('cust_nbr').total_shipments.transform('sum')
 
     return df
 
@@ -161,8 +183,7 @@ df = df_add_features(df)
 
 
 # Creating bar plots
-cust_nbr_list = st.text_input('Enter a list of customer numbers(EANs) from which you want to get insights, separated by comma.\n'
-                              'Then click "Display" button.')
+cust_nbr_list = st.text_input('Enter a list of customer numbers(EANs) from which you want to get insights, separated by comma.\nThen click "Display" button.')
 cust_nbr_list = cust_nbr_list.split(',')
 
 if st.button('Display'):
@@ -201,12 +222,9 @@ if st.button('Display'):
 
 
 # Creating sankey plots
-st.subheader('Distribution of shipments across different customer hierarchy')
-
-
 def genSankey(df, cat_cols=[], value_cols='', title='Sankey Diagram'):
     # maximum of 6 value cols -> 6 colors
-    colorPalette = ['#eb7134', '#ebba34', '#89eb34', '#34d0eb']
+    colorPalette = ['#eb7134', '#ebba34', '#89eb34', '#34d0eb', '#7303fc']
     labelList = []  # [uniqueGENs, uniqueCENs, uniqueEANs, uniqueMeters]
     colorNumList = []  # [nuniqueGENs, nuniqueCENs, nuniqueEANs, nuniqueMeters]
     for catCol in cat_cols:
@@ -260,13 +278,16 @@ def genSankey(df, cat_cols=[], value_cols='', title='Sankey Diagram'):
     return data
 
 
+st.subheader('Distribution of shipments across different customer hierarchy')
+
+
 EAN_list = cust_nbr_list
 GEN_list = df.loc[df.cust_nbr.isin(EAN_list)].glb_enti_nbr.unique().tolist()
 
 data_list = []
 for GEN in GEN_list:
-    sub_df = pd.DataFrame(df.loc[df.glb_enti_nbr==GEN].groupby(['glb_enti_nbr', 'ctry_enti_nbr', 'cust_nbr', 'meter']).total_shipments.sum()).reset_index()
-    data = genSankey(sub_df,cat_cols=['glb_enti_nbr','ctry_enti_nbr','cust_nbr','meter'],value_cols='total_shipments',title='Shipments_Distribution')
+    sub_df = pd.DataFrame(df.loc[df.glb_enti_nbr==GEN].groupby(['glb_enti_nbr', 'ctry_enti_nbr', 'cust_nbr', 'meter', 'sw_ver']).total_shipments.sum()).reset_index()
+    data = genSankey(sub_df,cat_cols=['glb_enti_nbr','ctry_enti_nbr','cust_nbr','meter','sw_ver'],value_cols='total_shipments',title='Shipments_Distribution')
     data_list.append(data)
 
 buttons = []
